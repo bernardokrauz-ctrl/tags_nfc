@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0f172a">
+<link rel="manifest" href="manifest.webmanifest">
+<title>Gravador de Tags</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;padding:16px;max-width:520px;margin:auto}
+h1{font-size:20px}nav{display:flex;gap:8px;margin:12px 0}
+nav button{flex:1;padding:10px;border:0;border-radius:8px;background:#1e293b;color:#e2e8f0;font-size:15px}
+nav button.on{background:#2563eb}
+.card{background:#1e293b;border-radius:12px;padding:14px;margin-bottom:12px}
+input{width:100%;padding:10px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#e2e8f0;font-size:16px;margin:6px 0}
+.row{display:flex;gap:8px}.btn{width:100%;padding:12px;border:0;border-radius:8px;background:#2563eb;color:#fff;font-size:16px;margin-top:6px}
+.btn.sec{background:#475569}.ok{color:#4ade80}.err{color:#f87171}.mut{color:#94a3b8;font-size:13px}
+pre{white-space:pre-wrap;word-break:break-all;margin:0}li{margin:6px 0;font-size:14px}
+label.c{display:flex;gap:8px;align-items:center;font-size:14px;margin-top:6px}label.c input{width:auto;margin:0}
+</style>
+</head>
+<body>
+<h1>Gravador de Tags NFC</h1>
+<div id="aviso" class="card err" hidden>Web NFC indisponível. Use o Chrome no Android, com NFC ligado e o site em HTTPS.</div>
+<nav>
+  <button data-t="ler" class="on">Ler</button>
+  <button data-t="gravar">Gravar</button>
+  <button data-t="log">Registro</button>
+</nav>
+
+<section id="ler" class="card">
+  <button class="btn" id="bLer">Iniciar leitura</button>
+  <p class="mut">Aproxime a tag da parte de trás do celular.</p>
+  <pre id="saidaLer"></pre>
+</section>
+
+<section id="gravar" class="card" hidden>
+  <div class="row">
+    <input id="prefixo" placeholder="Prefixo" value="PECA">
+    <input id="seq" type="number" placeholder="Próx. nº" value="1">
+  </div>
+  <input id="codigo" placeholder="Código (ou deixe vazio p/ gerar)">
+  <label class="c"><input type="checkbox" id="trava"> Travar tag após gravar (irreversível)</label>
+  <button class="btn" id="bGravar">Gravar</button>
+  <p id="msgG"></p>
+</section>
+
+<section id="log" class="card" hidden>
+  <ul id="lista"></ul>
+  <button class="btn sec" id="bCsv">Exportar CSV</button>
+</section>
+
+<script>
+const $=id=>document.getElementById(id);
+const LS={get:(k,d)=>{try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}},set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
+if(!('NDEFReader' in window)) $('aviso').hidden=false;
+if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x===b));
+  ['ler','gravar','log'].forEach(s=>$(s).hidden=s!==b.dataset.t);
+  if(b.dataset.t==='log')render();
+});
+
+const dec=r=>{try{return new TextDecoder(r.encoding||'utf-8').decode(r.data)}catch{return '(não decodificável)'}};
+let ctrl=null;
+
+$('bLer').onclick=async()=>{
+  if(ctrl){ctrl.abort();ctrl=null;$('bLer').textContent='Iniciar leitura';return}
+  try{
+    ctrl=new AbortController();
+    const n=new NDEFReader();
+    await n.scan({signal:ctrl.signal});
+    $('bLer').textContent='Parar leitura';
+    $('saidaLer').textContent='Aguardando tag...';
+    n.onreading=e=>{
+      const recs=[...e.message.records].map(r=>`[${r.recordType}] ${dec(r)}`);
+      $('saidaLer').textContent=`UID: ${e.serialNumber||'?'}\n`+(recs.join('\n')||'Tag vazia');
+    };
+    n.onreadingerror=()=>{$('saidaLer').textContent='Tag detectada, mas não foi possível ler (formato não suportado?).'};
+  }catch(e){$('saidaLer').textContent='Erro: '+e.message;ctrl=null}
+};
+
+const msg=(t,c)=>{$('msgG').className=c;$('msgG').textContent=t};
+
+$('bGravar').onclick=async()=>{
+  const log=LS.get('log',[]);
+  let seq=+$('seq').value||1;
+  let cod=$('codigo').value.trim()||`${$('prefixo').value.trim()}-${String(seq).padStart(6,'0')}`;
+  if(log.some(l=>l.code===cod)) return msg(`"${cod}" já foi gravado neste aparelho. Escolha outro código.`,'err');
+  try{
+    msg('Aproxime a tag para gravar...','mut');
+    const n=new NDEFReader();
+    await n.write({records:[{recordType:'text',data:cod}]});
+    msg('Gravado. Aproxime de novo para verificar...','mut');
+    const c=new AbortController();
+    await n.scan({signal:c.signal});
+    const uid=await new Promise((ok,no)=>{
+      const t=setTimeout(()=>{c.abort();no(new Error('Tempo esgotado na verificação'))},15000);
+      n.onreading=e=>{
+        const lido=[...e.message.records].map(dec).join('');
+        clearTimeout(t);c.abort();
+        lido===cod?ok(e.serialNumber||''):no(new Error(`Verificação falhou: lido "${lido}"`));
+      };
+    });
+    let extra='';
+    if($('trava').checked){
+      if(n.makeReadOnly){
+        msg('Aproxime a tag mais uma vez para travar...','mut');
+        try{await n.makeReadOnly();extra=' Tag travada.'}catch(e){extra=' (Trava falhou: '+e.message+')'}
+      }else extra=' (Este Chrome não suporta travar.)';
+    }
+    log.push({code:cod,uid,ts:new Date().toISOString()});LS.set('log',log);
+    if(!$('codigo').value.trim()){$('seq').value=seq+1}
+    msg(`Gravado e verificado: ${cod}.${extra}`,'ok');
+  }catch(e){msg('Erro: '+e.message,'err')}
+};
+
+function render(){
+  const log=LS.get('log',[]).slice().reverse();
+  $('lista').innerHTML=log.map(l=>`<li><b>${l.code}</b><br><span class="mut">UID ${l.uid||'?'} · ${new Date(l.ts).toLocaleString('pt-BR')}</span></li>`).join('')||'<li class="mut">Nada gravado ainda.</li>';
+}
+$('bCsv').onclick=()=>{
+  const rows=['codigo;uid;data',...LS.get('log',[]).map(l=>`${l.code};${l.uid};${l.ts}`)].join('\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([rows],{type:'text/csv'}));a.download='tags.csv';a.click();
+};
+</script>
+</body>
+</html>
