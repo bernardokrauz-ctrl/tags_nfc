@@ -62,7 +62,22 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   if(b.dataset.t==='log')render();
 });
 
-const dec=r=>{try{return new TextDecoder(r.encoding||'utf-8').decode(r.data)}catch{return '(não decodificável)'}};
+const dec=r=>{try{return r.data?new TextDecoder(r.encoding||'utf-8').decode(r.data):''}catch{return ''}};
+const hex=r=>{if(!r.data)return '';const b=new Uint8Array(r.data.buffer,r.data.byteOffset,r.data.byteLength);return [...b].map(x=>x.toString(16).padStart(2,'0')).join(' ').toUpperCase()};
+const printable=s=>s&&!/[\u0000-\u0008\u000E-\u001F\uFFFD]/.test(s);
+function descRec(r,ind=''){
+  const t=r.recordType;
+  let out=`${ind}[${t}${r.mediaType?' · '+r.mediaType:''}${r.lang?' · '+r.lang:''}]`;
+  if(t==='smart-poster'){
+    try{for(const s of r.toRecords())out+='\n'+descRec(s,ind+'  ')}catch{out+=' (não foi possível abrir)'}
+    return out;
+  }
+  const txt=dec(r);
+  if(t==='empty'||!r.data||!r.data.byteLength) return out+' (vazio)';
+  out+=' '+(printable(txt)?txt:'(binário)');
+  if(!printable(txt)||t==='unknown'||t==='external') out+=`\n${ind}  HEX: ${hex(r)}`;
+  return out;
+}
 let ctrl=null;
 
 $('bLer').onclick=async()=>{
@@ -74,10 +89,10 @@ $('bLer').onclick=async()=>{
     $('bLer').textContent='Parar leitura';
     $('saidaLer').textContent='Aguardando tag...';
     n.onreading=e=>{
-      const recs=[...e.message.records].map(r=>`[${r.recordType}] ${dec(r)}`);
-      $('saidaLer').textContent=`UID: ${e.serialNumber||'?'}\n`+(recs.join('\n')||'Tag vazia');
+      const recs=[...e.message.records].map(r=>descRec(r));
+      $('saidaLer').textContent=`UID: ${e.serialNumber||'?'}\nRegistros: ${recs.length}\n\n`+(recs.join('\n')||'Tag sem dados NDEF (em branco). Pode ser gravada na aba Gravar.');
     };
-    n.onreadingerror=()=>{$('saidaLer').textContent='Tag detectada, mas não foi possível ler (formato não suportado?).'};
+    n.onreadingerror=()=>{$('saidaLer').textContent='Tag detectada, mas o Chrome não conseguiu ler.\n\nIsso acontece com tags que não usam NDEF (ex.: Mifare Classic, cartões de acesso/transporte, tags criptografadas ou protegidas por senha). O Web NFC só lê NDEF, e nesses casos não expõe nem o UID. Para esses tipos é preciso um app nativo (ex.: NFC Tools, MIFARE Classic Tool).'};
   }catch(e){$('saidaLer').textContent='Erro: '+e.message;ctrl=null}
 };
 
